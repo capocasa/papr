@@ -7,7 +7,7 @@ const Version = staticRead("../papr.nimble").splitLines().filterIt(it.startsWith
 
 proc loadEnv() =
   if fileExists(".env"):
-    load(".env")
+    load()
 
 proc getConfig(): tuple[url: string, token: string] =
   loadEnv()

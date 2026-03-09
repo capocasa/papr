@@ -41,7 +41,7 @@ proc resolveTagName(url, token, tagName: string): int =
     quit "Tag not found: " & tagName, 1
   results[0]["id"].getInt
 
-proc list*(tag: string = "inbox", page: int = 1, limit: int = 25): int =
+proc list*(tag: string = "inbox", page: int = 1, limit: int = 25, text: bool = false): int =
   ## List documents filtered by tag
   let (url, token) = getConfig()
   let tagId = resolveTagName(url, token, tag)
@@ -65,7 +65,12 @@ proc list*(tag: string = "inbox", page: int = 1, limit: int = 25): int =
     else:
       ""
     let corrStr = if correspondent != "": " | " & correspondent else: ""
-    echo fmt"  {id:>6}  {created}  {title}{corrStr}"
+    var line = fmt"  {id:>6}  {created}  {title}{corrStr}"
+    if text and doc.hasKey("content") and doc["content"].kind != JNull:
+      let content = doc["content"].getStr.replace("\n", "\\t").strip
+      if content.len > 0:
+        line &= "  " & content
+    echo line
 
   if count > page * limit:
     echo ""
@@ -138,6 +143,45 @@ proc download*(id: int, output: string = "", original: bool = false): int =
   writeFile(outFile, resp.body)
   echo fmt"Downloaded: {outFile} ({formatSize(resp.body.len)})"
 
+proc tag*(id: int, add: seq[string] = @[], remove: seq[string] = @[]): int =
+  ## Add or remove tags on a document
+  if add.len == 0 and remove.len == 0:
+    quit "Specify at least one --add or --remove tag", 1
+  let (url, token) = getConfig()
+
+  let doc = apiGet(url, token, fmt"/api/documents/{id}/")
+  var tagIds: seq[int]
+  for t in doc["tags"]:
+    tagIds.add(t.getInt)
+
+  for name in add:
+    let tagId = resolveTagName(url, token, name)
+    if tagId notin tagIds:
+      tagIds.add(tagId)
+
+  for name in remove:
+    let tagId = resolveTagName(url, token, name)
+    let idx = tagIds.find(tagId)
+    if idx >= 0:
+      tagIds.delete(idx)
+
+  let body = %*{"tags": tagIds}
+  let client = apiClient(token)
+  client.headers["Content-Type"] = "application/json"
+  let resp = client.patch(url & fmt"/api/documents/{id}/", body = $body)
+  if resp.code != Http200:
+    quit "Update failed: HTTP " & $resp.code, 1
+
+  # Show resulting tags
+  var tagNames: seq[string]
+  for tagId in tagIds:
+    let tagData = apiGet(url, token, fmt"/api/tags/{tagId}/")
+    tagNames.add(tagData["name"].getStr)
+  if tagNames.len > 0:
+    echo "Tags: " & tagNames.join(", ")
+  else:
+    echo "No tags"
+
 proc version*(): int =
   ## Show version
   echo "papr " & Version
@@ -148,8 +192,9 @@ when isMainModule:
     [list, help = {
       "tag": "Tag name to filter by",
       "page": "Page number",
-      "limit": "Documents per page"
-    }],
+      "limit": "Documents per page",
+      "text": "Include OCR text"
+    }, short = {"text": 'x'}],
     [show, help = {
       "id": "Document ID"
     }],
@@ -157,6 +202,11 @@ when isMainModule:
       "id": "Document ID",
       "output": "Output filename (default: document title)",
       "original": "Download original file instead of archived version"
+    }],
+    [tag, help = {
+      "id": "Document ID",
+      "add": "Tag name to add",
+      "remove": "Tag name to remove"
     }],
     [version]
   )

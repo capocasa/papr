@@ -59,6 +59,13 @@ papr tag -i 817 --remove inbox
 papr tag -i 817 --add processed --remove inbox
 ```
 
+### Delete documents
+
+```
+papr delete -i 817              # asks for confirmation
+papr delete -i 817 -y           # skip confirmation
+```
+
 ## License
 
 MIT

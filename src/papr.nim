@@ -5,6 +5,19 @@ import dotenv
 const Version = staticRead("../papr.nimble").splitLines().filterIt(it.startsWith("version")).
     mapIt(it.split("=")[1].strip().strip(chars = {'"'}))[0]
 
+type DocId* = distinct int
+
+proc `$`*(id: DocId): string = $int(id)
+proc `==`*(a, b: DocId): bool {.borrow.}
+
+proc argParse*(dst: var DocId, dfl: DocId, a: var ArgcvtParams): bool =
+  var tmp: int
+  result = argParse(tmp, int(dfl), a)
+  if result: dst = DocId(tmp)
+
+proc argHelp*(dfl: DocId, a: var ArgcvtParams): seq[string] =
+  argHelp(int(dfl), a)
+
 proc loadEnv() =
   if fileExists(".env"):
     load()
@@ -76,7 +89,7 @@ proc list*(tag: string = "inbox", page: int = 1, limit: int = 25, text: bool = f
     echo ""
     echo fmt"  Page {page}/{(count + limit - 1) div limit}"
 
-proc show*(id: int): int =
+proc show*(id: DocId): int =
   ## Show document metadata
   let (url, token) = getConfig()
   let doc = apiGet(url, token, fmt"/api/documents/{id}/")
@@ -117,7 +130,7 @@ proc show*(id: int): int =
           break
         echo "  " & line
 
-proc download*(id: int, output: string = "", original: bool = false): int =
+proc download*(id: DocId, output: string = "", original: bool = false): int =
   ## Download document PDF
   let (url, token) = getConfig()
 
@@ -143,7 +156,7 @@ proc download*(id: int, output: string = "", original: bool = false): int =
   writeFile(outFile, resp.body)
   echo fmt"Downloaded: {outFile} ({formatSize(resp.body.len)})"
 
-proc tag*(id: int, add: seq[string] = @[], remove: seq[string] = @[]): int =
+proc tag*(id: DocId, add: seq[string] = @[], remove: seq[string] = @[]): int =
   ## Add or remove tags on a document
   if add.len == 0 and remove.len == 0:
     quit "Specify at least one --add or --remove tag", 1
@@ -182,6 +195,25 @@ proc tag*(id: int, add: seq[string] = @[], remove: seq[string] = @[]): int =
   else:
     echo "No tags"
 
+proc destroy*(id: DocId, yes: bool = false): int =
+  ## Delete a document
+  let (url, token) = getConfig()
+  let doc = apiGet(url, token, fmt"/api/documents/{id}/")
+  let title = doc["title"].getStr
+
+  if not yes:
+    stderr.write fmt"Delete '{title}' (id {id})? [y/N] "
+    let answer = stdin.readLine.strip.toLowerAscii
+    if answer != "y":
+      echo "Cancelled"
+      return 0
+
+  let client = apiClient(token)
+  let resp = client.delete(url & fmt"/api/documents/{id}/")
+  if resp.code != Http204:
+    quit "Delete failed: HTTP " & $resp.code, 1
+  echo fmt"Deleted: {title} (id {id})"
+
 proc version*(): int =
   ## Show version
   echo "papr " & Version
@@ -208,5 +240,9 @@ when isMainModule:
       "add": "Tag name to add",
       "remove": "Tag name to remove"
     }],
+    [destroy, cmdName = "delete", help = {
+      "id": "Document ID",
+      "yes": "Skip confirmation"
+    }, short = {"yes": 'y'}],
     [version]
   )

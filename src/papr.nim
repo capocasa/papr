@@ -6,10 +6,7 @@ const Version = staticRead("../papr.nimble").splitLines().filterIt(it.startsWith
     mapIt(it.split("=")[1].strip().strip(chars = {'"'}))[0]
 
 proc loadEnv() =
-  let envFile = getAppDir() / ".env"
-  if fileExists(envFile):
-    load(envFile)
-  elif fileExists(".env"):
+  if fileExists(".env"):
     load(".env")
 
 proc getConfig(): tuple[url: string, token: string] =

@@ -156,11 +156,57 @@ proc download*(id: DocId, output: string = "", original: bool = false): int =
   writeFile(outFile, resp.body)
   echo fmt"Downloaded: {outFile} ({formatSize(resp.body.len)})"
 
-proc tag*(id: DocId, add: seq[string] = @[], remove: seq[string] = @[]): int =
-  ## Add or remove tags on a document
-  if add.len == 0 and remove.len == 0:
-    quit "Specify at least one --add or --remove tag", 1
+proc tag*(id = DocId(0), add: seq[string] = @[], remove: seq[string] = @[],
+          create: seq[string] = @[], rename: seq[string] = @[],
+          list: bool = false): int =
+  ## Add, remove, create, rename or list tags
+  if add.len == 0 and remove.len == 0 and create.len == 0 and
+      rename.len == 0 and not list:
+    quit "Specify at least one --add, --remove, --create, --rename or --list", 1
   let (url, token) = getConfig()
+
+  # List all tags
+  if list:
+    var page = 1
+    while true:
+      let data = apiGet(url, token, fmt"/api/tags/?page={page}&page_size=100&ordering=name")
+      for t in data["results"]:
+        echo t["name"].getStr
+      if data["next"].kind == JNull:
+        break
+      inc page
+    if add.len == 0 and remove.len == 0 and create.len == 0:
+      return 0
+
+  # Create new tags
+  for name in create:
+    let client = apiClient(token)
+    client.headers["Content-Type"] = "application/json"
+    let body = %*{"name": name}
+    let resp = client.post(url & "/api/tags/", body = $body)
+    if resp.code != Http201:
+      quit "Failed to create tag '" & name & "': HTTP " & $resp.code, 1
+    echo "Created tag: " & name
+
+  # Rename tags (old:new)
+  for pair in rename:
+    let parts = pair.split(":", maxsplit = 1)
+    if parts.len != 2 or parts[0] == "" or parts[1] == "":
+      quit "Rename format: old:new (got '" & pair & "')", 1
+    let tagId = resolveTagName(url, token, parts[0])
+    let client = apiClient(token)
+    client.headers["Content-Type"] = "application/json"
+    let body = %*{"name": parts[1]}
+    let resp = client.patch(url & fmt"/api/tags/{tagId}/", body = $body)
+    if resp.code != Http200:
+      quit "Failed to rename tag '" & parts[0] & "': HTTP " & $resp.code, 1
+    echo "Renamed tag: " & parts[0] & " -> " & parts[1]
+
+  if add.len == 0 and remove.len == 0:
+    return 0
+
+  if int(id) == 0:
+    quit "Specify --id to add or remove tags on a document", 1
 
   let doc = apiGet(url, token, fmt"/api/documents/{id}/")
   var tagIds: seq[int]
@@ -238,8 +284,11 @@ when isMainModule:
     [tag, help = {
       "id": "Document ID",
       "add": "Tag name to add",
-      "remove": "Tag name to remove"
-    }],
+      "remove": "Tag name to remove",
+      "create": "Create a new tag",
+      "rename": "Rename a tag (old:new)",
+      "list": "List all tags"
+    }, short = {"list": 'l'}],
     [destroy, cmdName = "delete", help = {
       "id": "Document ID",
       "yes": "Skip confirmation"

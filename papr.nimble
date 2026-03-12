@@ -1,4 +1,4 @@
-version       = "0.1.1"
+version       = "0.1.2"
 author        = "capocasa"
 description   = "Paperless-ngx CLI for listing, inspecting and downloading documents"
 license       = "MIT"

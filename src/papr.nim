@@ -241,6 +241,43 @@ proc tag*(id = DocId(0), add: seq[string] = @[], remove: seq[string] = @[],
   else:
     echo "No tags"
 
+proc search*(terms: seq[string], page: int = 1, limit: int = 25, text: bool = false): int =
+  ## Search documents by query
+  if terms.len == 0:
+    quit "Specify search terms", 1
+  let (url, token) = getConfig()
+  let query = encodeUrl(terms.join(" "))
+  let endpoint = fmt"/api/documents/?query={query}&page={page}&page_size={limit}&ordering=-created"
+  let data = apiGet(url, token, endpoint)
+
+  let count = data["count"].getInt
+  let results = data["results"]
+
+  echo fmt"{count} documents matching '{terms.join("" "")}'"
+  echo ""
+
+  for doc in results:
+    let id = doc["id"].getInt
+    let title = doc["title"].getStr
+    let created = doc["created"].getStr.split("T")[0]
+    let correspondent = if doc["correspondent"].kind != JNull:
+      let corrId = doc["correspondent"].getInt
+      let corrData = apiGet(url, token, fmt"/api/correspondents/{corrId}/")
+      corrData["name"].getStr
+    else:
+      ""
+    let corrStr = if correspondent != "": " | " & correspondent else: ""
+    var line = fmt"  {id:>6}  {created}  {title}{corrStr}"
+    if text and doc.hasKey("content") and doc["content"].kind != JNull:
+      let content = doc["content"].getStr.replace("\n", "\\t").strip
+      if content.len > 0:
+        line &= "  " & content
+    echo line
+
+  if count > page * limit:
+    echo ""
+    echo fmt"  Page {page}/{(count + limit - 1) div limit}"
+
 proc destroy*(id: DocId, yes: bool = false): int =
   ## Delete a document
   let (url, token) = getConfig()
@@ -289,6 +326,12 @@ when isMainModule:
       "rename": "Rename a tag (old:new)",
       "list": "List all tags"
     }, short = {"list": 'l'}],
+    [search, help = {
+      "terms": "Search terms",
+      "page": "Page number",
+      "limit": "Documents per page",
+      "text": "Include OCR text"
+    }, short = {"text": 'x'}],
     [destroy, cmdName = "delete", help = {
       "id": "Document ID",
       "yes": "Skip confirmation"

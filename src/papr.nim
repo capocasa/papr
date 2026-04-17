@@ -321,6 +321,17 @@ proc destroy*(id: DocId, yes: bool = false): int =
     quit "Delete failed: HTTP " & $resp.code, 1
   echo fmt"Deleted: {title} (id {id})"
 
+proc consume*(): int =
+  ## Show files currently in the consume pipeline
+  let (url, token) = getConfig()
+  let data = apiGet(url, token, "/api/tasks/")
+  for t in data:
+    let status = t{"status"}.getStr
+    if status in ["PENDING", "STARTED"]:
+      let name = t{"task_file_name"}.getStr
+      if name != "":
+        echo name
+
 proc version*(): int =
   ## Show version
   echo "papr " & Version
@@ -362,5 +373,6 @@ when isMainModule:
       "id": "Document ID",
       "yes": "Skip confirmation"
     }, short = {"yes": 'y'}],
+    [consume],
     [version]
   )

@@ -68,6 +68,12 @@ papr delete -i 817              # asks for confirmation
 papr delete -i 817 -y           # skip confirmation
 ```
 
+### Consume pipeline
+
+```
+papr consume                    # files currently being processed
+```
+
 ## License
 
 MIT
@@ -75,5 +81,5 @@ MIT
 ## Changelog
 
 ```
-0.1.3    list all documents by default, add sort options
+0.1.3    list all documents by default, add sort options, add consume command
 ```

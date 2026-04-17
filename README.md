@@ -29,8 +29,10 @@ curl -X POST https://paperless.example.com/api/token/ \
 ### List documents
 
 ```
-papr list                     # inbox (default)
-papr list -t receipts         # by tag name
+papr list                     # all documents
+papr list -t inbox            # by tag name
+papr list -s added            # sort by date added
+papr list -s title -r         # reverse sort
 papr list -x                  # include OCR text
 papr list -p 2                # page 2
 ```
@@ -69,3 +71,9 @@ papr delete -i 817 -y           # skip confirmation
 ## License
 
 MIT
+
+## Changelog
+
+```
+0.1.3    list all documents by default, add sort options
+```

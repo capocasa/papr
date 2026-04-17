@@ -1,4 +1,4 @@
-import std/[httpclient, json, os, strutils, strformat, uri, sequtils]
+import std/[httpclient, json, os, strutils, strformat, uri, sequtils, tables]
 import cligen
 import dotenv
 
@@ -54,17 +54,41 @@ proc resolveTagName(url, token, tagName: string): int =
     quit "Tag not found: " & tagName, 1
   results[0]["id"].getInt
 
-proc list*(tag: string = "inbox", page: int = 1, limit: int = 25, text: bool = false): int =
-  ## List documents filtered by tag
+const SortFields = {
+  "created": "created",
+  "added": "added",
+  "modified": "modified",
+  "title": "title",
+  "correspondent": "correspondent__name",
+  "type": "document_type__name"
+}.toTable
+
+proc list*(tag: string = "", page: int = 1, limit: int = 25, text: bool = false,
+           sort: string = "created", reverse: bool = false): int =
+  ## List documents, optionally filtered by tag
+  if sort notin SortFields:
+    quit "Unknown sort field '" & sort & "'. Supported: " &
+      toSeq(SortFields.keys).join(", "), 1
   let (url, token) = getConfig()
-  let tagId = resolveTagName(url, token, tag)
-  let endpoint = fmt"/api/documents/?tags__id={tagId}&page={page}&page_size={limit}&ordering=-created"
+  # Date fields default descending (newest first); text fields default ascending
+  let isDate = sort in ["created", "added", "modified"]
+  let descending = if reverse: not isDate else: isDate
+  let prefix = if descending: "-" else: ""
+  let ordering = prefix & SortFields[sort]
+  let endpoint = if tag != "":
+    let tagId = resolveTagName(url, token, tag)
+    fmt"/api/documents/?tags__id={tagId}&page={page}&page_size={limit}&ordering={ordering}"
+  else:
+    fmt"/api/documents/?page={page}&page_size={limit}&ordering={ordering}"
   let data = apiGet(url, token, endpoint)
 
   let count = data["count"].getInt
   let results = data["results"]
 
-  echo fmt"{count} documents tagged '{tag}'"
+  if tag != "":
+    echo fmt"{count} documents tagged '{tag}'"
+  else:
+    echo fmt"{count} documents"
   echo ""
 
   for doc in results:
@@ -305,11 +329,13 @@ when isMainModule:
   dispatchMulti(
     ["multi", doc = "Paperless-ngx CLI"],
     [list, help = {
-      "tag": "Tag name to filter by",
+      "tag": "Tag name to filter by (default: all)",
       "page": "Page number",
       "limit": "Documents per page",
-      "text": "Include OCR text"
-    }, short = {"text": 'x'}],
+      "text": "Include OCR text",
+      "sort": "Sort field: created, added, modified, title, correspondent, type",
+      "reverse": "Reverse sort order"
+    }, short = {"text": 'x', "reverse": 'r'}],
     [show, help = {
       "id": "Document ID"
     }],

@@ -321,7 +321,7 @@ proc destroy*(id: DocId, yes: bool = false): int =
     quit "Delete failed: HTTP " & $resp.code, 1
   echo fmt"Deleted: {title} (id {id})"
 
-proc consume*(): int =
+proc tasks*(): int =
   ## Show files currently in the consume pipeline
   let (url, token) = getConfig()
   let data = apiGet(url, token, "/api/tasks/")
@@ -373,6 +373,6 @@ when isMainModule:
       "id": "Document ID",
       "yes": "Skip confirmation"
     }, short = {"yes": 'y'}],
-    [consume],
+    [tasks],
     [version]
   )

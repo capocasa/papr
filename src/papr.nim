@@ -47,8 +47,8 @@ proc apiGet(url, token, endpoint: string): JsonNode =
     quit "API error: HTTP " & $resp.code, 1
   parseJson(resp.body)
 
-proc resolveTagName(url, token, tagName: string): int =
-  let data = apiGet(url, token, "/api/tags/?name__iexact=" & encodeUrl(tagName))
+proc resolveTagName*(url, token, tagName: string): int =
+  let data = apiGet(url, token, "/api/tags/?name__exact=" & encodeUrl(tagName))
   let results = data["results"]
   if results.len == 0:
     quit "Tag not found: " & tagName, 1
@@ -113,10 +113,13 @@ proc list*(tag: string = "", page: int = 1, limit: int = 25, text: bool = false,
     echo ""
     echo fmt"  Page {page}/{(count + limit - 1) div limit}"
 
-proc show*(id: DocId): int =
+proc show*(id: seq[DocId] = @[]): int =
   ## Show document metadata
+  if id.len == 0:
+    quit "Specify a document id", 1
+  let docId = id[0]
   let (url, token) = getConfig()
-  let doc = apiGet(url, token, fmt"/api/documents/{id}/")
+  let doc = apiGet(url, token, fmt"/api/documents/{docId}/")
 
   echo "ID:            " & $doc["id"].getInt
   echo "Title:         " & doc["title"].getStr
@@ -154,12 +157,15 @@ proc show*(id: DocId): int =
           break
         echo "  " & line
 
-proc download*(id: DocId, output: string = "", original: bool = false): int =
+proc download*(id: seq[DocId] = @[], output: string = "", original: bool = false): int =
   ## Download document PDF
+  if id.len == 0:
+    quit "Specify a document id", 1
+  let docId = id[0]
   let (url, token) = getConfig()
 
   # Get metadata first for default filename
-  let doc = apiGet(url, token, fmt"/api/documents/{id}/")
+  let doc = apiGet(url, token, fmt"/api/documents/{docId}/")
   let origName = doc["original_file_name"].getStr
   let title = doc["title"].getStr
 
@@ -168,9 +174,9 @@ proc download*(id: DocId, output: string = "", original: bool = false): int =
     else: title.replace(" ", "_") & ".pdf"
 
   let endpoint = if original:
-    fmt"/api/documents/{id}/download/?original=true"
+    fmt"/api/documents/{docId}/download/?original=true"
   else:
-    fmt"/api/documents/{id}/download/"
+    fmt"/api/documents/{docId}/download/"
 
   let client = apiClient(token)
   let resp = client.get(url & endpoint)
@@ -180,90 +186,122 @@ proc download*(id: DocId, output: string = "", original: bool = false): int =
   writeFile(outFile, resp.body)
   echo fmt"Downloaded: {outFile} ({formatSize(resp.body.len)})"
 
-proc tag*(id = DocId(0), add: seq[string] = @[], remove: seq[string] = @[],
-          create: seq[string] = @[], rename: seq[string] = @[],
-          list: bool = false): int =
-  ## Add, remove, create, rename or list tags
-  if add.len == 0 and remove.len == 0 and create.len == 0 and
-      rename.len == 0 and not list:
-    quit "Specify at least one --add, --remove, --create, --rename or --list", 1
-  let (url, token) = getConfig()
+proc listTagNames*(url, token: string): seq[string] =
+  var page = 1
+  while true:
+    let data = apiGet(url, token, fmt"/api/tags/?page={page}&page_size=100&ordering=name")
+    for t in data["results"]:
+      result.add(t["name"].getStr)
+    if data["next"].kind == JNull:
+      break
+    inc page
 
-  # List all tags
-  if list:
-    var page = 1
-    while true:
-      let data = apiGet(url, token, fmt"/api/tags/?page={page}&page_size=100&ordering=name")
-      for t in data["results"]:
-        echo t["name"].getStr
-      if data["next"].kind == JNull:
-        break
-      inc page
-    if add.len == 0 and remove.len == 0 and create.len == 0:
-      return 0
+proc createTag(url, token, name: string) =
+  let client = apiClient(token)
+  client.headers["Content-Type"] = "application/json"
+  let body = %*{"name": name}
+  let resp = client.post(url & "/api/tags/", body = $body)
+  if resp.code != Http201:
+    quit "Failed to create tag '" & name & "': HTTP " & $resp.code, 1
 
-  # Create new tags
-  for name in create:
-    let client = apiClient(token)
-    client.headers["Content-Type"] = "application/json"
-    let body = %*{"name": name}
-    let resp = client.post(url & "/api/tags/", body = $body)
-    if resp.code != Http201:
-      quit "Failed to create tag '" & name & "': HTTP " & $resp.code, 1
-    echo "Created tag: " & name
+proc deleteTag(url, token, name: string) =
+  let tagId = resolveTagName(url, token, name)
+  let client = apiClient(token)
+  let resp = client.delete(url & fmt"/api/tags/{tagId}/")
+  if resp.code != Http204:
+    quit "Failed to delete tag '" & name & "': HTTP " & $resp.code, 1
 
-  # Rename tags (old:new)
-  for pair in rename:
-    let parts = pair.split(":", maxsplit = 1)
-    if parts.len != 2 or parts[0] == "" or parts[1] == "":
-      quit "Rename format: old:new (got '" & pair & "')", 1
-    let tagId = resolveTagName(url, token, parts[0])
-    let client = apiClient(token)
-    client.headers["Content-Type"] = "application/json"
-    let body = %*{"name": parts[1]}
-    let resp = client.patch(url & fmt"/api/tags/{tagId}/", body = $body)
-    if resp.code != Http200:
-      quit "Failed to rename tag '" & parts[0] & "': HTTP " & $resp.code, 1
-    echo "Renamed tag: " & parts[0] & " -> " & parts[1]
+proc renameTag(url, token, oldName, newName: string) =
+  let tagId = resolveTagName(url, token, oldName)
+  let client = apiClient(token)
+  client.headers["Content-Type"] = "application/json"
+  let body = %*{"name": newName}
+  let resp = client.patch(url & fmt"/api/tags/{tagId}/", body = $body)
+  if resp.code != Http200:
+    quit "Failed to rename tag '" & oldName & "': HTTP " & $resp.code, 1
 
-  if add.len == 0 and remove.len == 0:
-    return 0
+proc partitionArgs(args: seq[string]): tuple[tags: seq[string], ids: seq[DocId]] =
+  for a in args:
+    try:
+      result.ids.add(DocId(parseInt(a)))
+    except ValueError:
+      result.tags.add(a)
 
-  if int(id) == 0:
-    quit "Specify --id to add or remove tags on a document", 1
-
-  let doc = apiGet(url, token, fmt"/api/documents/{id}/")
+proc updateDocTags(url, token: string, docId: DocId,
+                   addTags, removeTags: seq[string]) =
+  let doc = apiGet(url, token, fmt"/api/documents/{docId}/")
   var tagIds: seq[int]
   for t in doc["tags"]:
     tagIds.add(t.getInt)
-
-  for name in add:
-    let tagId = resolveTagName(url, token, name)
-    if tagId notin tagIds:
-      tagIds.add(tagId)
-
-  for name in remove:
-    let tagId = resolveTagName(url, token, name)
-    let idx = tagIds.find(tagId)
+  for name in addTags:
+    let tid = resolveTagName(url, token, name)
+    if tid notin tagIds:
+      tagIds.add(tid)
+  for name in removeTags:
+    let tid = resolveTagName(url, token, name)
+    let idx = tagIds.find(tid)
     if idx >= 0:
       tagIds.delete(idx)
-
   let body = %*{"tags": tagIds}
   let client = apiClient(token)
   client.headers["Content-Type"] = "application/json"
-  let resp = client.patch(url & fmt"/api/documents/{id}/", body = $body)
+  let resp = client.patch(url & fmt"/api/documents/{docId}/", body = $body)
   if resp.code != Http200:
-    quit "Update failed: HTTP " & $resp.code, 1
+    quit "Update failed for doc " & $docId & ": HTTP " & $resp.code, 1
 
-  # Show resulting tags
-  var tagNames: seq[string]
-  for tagId in tagIds:
-    let tagData = apiGet(url, token, fmt"/api/tags/{tagId}/")
-    tagNames.add(tagData["name"].getStr)
-  if tagNames.len > 0:
-    echo "Tags: " & tagNames.join(", ")
+proc applyTags(addMode: bool, args: seq[string]) =
+  let (url, token) = getConfig()
+  let (tags, ids) = partitionArgs(args)
+  if tags.len == 0 or ids.len == 0:
+    quit "Need at least one tag name and one document id", 1
+  for id in ids:
+    if addMode:
+      updateDocTags(url, token, id, tags, @[])
+    else:
+      updateDocTags(url, token, id, @[], tags)
+  let verb = if addMode: "Tagged" else: "Untagged"
+  echo fmt"{verb} {ids.len} document(s) with: {tags.join("" "")}"
+
+proc tag*(args: seq[string] = @[]): int =
+  ## List, create, delete, rename tags, or apply tags to documents.
+  ## Subcommands: list, create <name>, delete <name>, rename <old> <new>.
+  ## Otherwise: apply given tags to given document ids (tags are non-numeric,
+  ## ids are numeric; at least one of each required).
+  let (url, token) = getConfig()
+
+  if args.len == 0:
+    for name in listTagNames(url, token):
+      echo name
+    return 0
+
+  case args[0]
+  of "list":
+    if args.len != 1:
+      quit "usage: papr tag list", 1
+    for name in listTagNames(url, token):
+      echo name
+  of "create":
+    if args.len != 2:
+      quit "usage: papr tag create <name>", 1
+    createTag(url, token, args[1])
+    echo "Created: " & args[1]
+  of "delete":
+    if args.len != 2:
+      quit "usage: papr tag delete <name>", 1
+    deleteTag(url, token, args[1])
+    echo "Deleted: " & args[1]
+  of "rename":
+    if args.len != 3:
+      quit "usage: papr tag rename <old> <new>", 1
+    renameTag(url, token, args[1], args[2])
+    echo "Renamed: " & args[1] & " -> " & args[2]
   else:
-    echo "No tags"
+    applyTags(addMode = true, args)
+
+proc untag*(args: seq[string] = @[]): int =
+  ## Remove tags from documents. Args: tag names and document ids mixed;
+  ## at least one of each required.
+  applyTags(addMode = false, args)
 
 proc search*(terms: seq[string], page: int = 1, limit: int = 25, text: bool = false): int =
   ## Search documents by query
@@ -302,24 +340,27 @@ proc search*(terms: seq[string], page: int = 1, limit: int = 25, text: bool = fa
     echo ""
     echo fmt"  Page {page}/{(count + limit - 1) div limit}"
 
-proc destroy*(id: DocId, yes: bool = false): int =
+proc destroy*(id: seq[DocId] = @[], yes: bool = false): int =
   ## Delete a document
+  if id.len == 0:
+    quit "Specify a document id", 1
+  let docId = id[0]
   let (url, token) = getConfig()
-  let doc = apiGet(url, token, fmt"/api/documents/{id}/")
+  let doc = apiGet(url, token, fmt"/api/documents/{docId}/")
   let title = doc["title"].getStr
 
   if not yes:
-    stderr.write fmt"Delete '{title}' (id {id})? [y/N] "
+    stderr.write fmt"Delete '{title}' (id {docId})? [y/N] "
     let answer = stdin.readLine.strip.toLowerAscii
     if answer != "y":
       echo "Cancelled"
       return 0
 
   let client = apiClient(token)
-  let resp = client.delete(url & fmt"/api/documents/{id}/")
+  let resp = client.delete(url & fmt"/api/documents/{docId}/")
   if resp.code != Http204:
     quit "Delete failed: HTTP " & $resp.code, 1
-  echo fmt"Deleted: {title} (id {id})"
+  echo fmt"Deleted: {title} (id {docId})"
 
 proc tasks*(): int =
   ## Show files currently in the consume pipeline
@@ -349,20 +390,18 @@ when isMainModule:
     }, short = {"text": 'x', "reverse": 'r'}],
     [show, help = {
       "id": "Document ID"
-    }],
+    }, positional = "id"],
     [download, help = {
       "id": "Document ID",
       "output": "Output filename (default: document title)",
       "original": "Download original file instead of archived version"
-    }],
+    }, positional = "id"],
     [tag, help = {
-      "id": "Document ID",
-      "add": "Tag name to add",
-      "remove": "Tag name to remove",
-      "create": "Create a new tag",
-      "rename": "Rename a tag (old:new)",
-      "list": "List all tags"
-    }, short = {"list": 'l'}],
+      "args": "[list|create <name>|delete <name>|rename <old> <new>] or <tags> <ids>"
+    }, positional = "args"],
+    [untag, help = {
+      "args": "<tags> <ids>"
+    }, positional = "args"],
     [search, help = {
       "terms": "Search terms",
       "page": "Page number",
@@ -372,7 +411,7 @@ when isMainModule:
     [destroy, cmdName = "delete", help = {
       "id": "Document ID",
       "yes": "Skip confirmation"
-    }, short = {"yes": 'y'}],
+    }, positional = "id", short = {"yes": 'y'}],
     [tasks],
     [version]
   )

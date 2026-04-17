@@ -40,7 +40,7 @@ papr list -p 2                # page 2
 ### Show document metadata
 
 ```
-papr show -i 817
+papr show 817
 ```
 
 Shows ID, title, dates, correspondent, document type, tags and a content preview.
@@ -48,24 +48,37 @@ Shows ID, title, dates, correspondent, document type, tags and a content preview
 ### Download PDF
 
 ```
-papr download -i 817              # archived (OCR'd) version
-papr download -i 817 --original   # original scan
-papr download -i 817 -o invoice.pdf
+papr download 817              # archived (OCR'd) version
+papr download 817 --original   # original scan
+papr download 817 -o invoice.pdf
 ```
 
 ### Tag documents
 
+Tags and document ids go together in any order; numeric args are ids,
+the rest are tag names. At least one of each is required.
+
 ```
-papr tag -i 817 --add important
-papr tag -i 817 --remove inbox
-papr tag -i 817 --add processed --remove inbox
+papr tag important 817              # apply tag to doc
+papr tag important urgent 817 923   # multiple tags, multiple docs
+papr untag inbox 817                # remove tag from doc
+```
+
+### Manage tags
+
+```
+papr tag                            # list all tags
+papr tag list                       # same
+papr tag create Inbox               # create a new tag
+papr tag rename Inbox Mailbox       # rename
+papr tag delete Mailbox             # delete
 ```
 
 ### Delete documents
 
 ```
-papr delete -i 817              # asks for confirmation
-papr delete -i 817 -y           # skip confirmation
+papr delete 817              # asks for confirmation
+papr delete 817 -y           # skip confirmation
 ```
 
 ### Consume pipeline
@@ -81,5 +94,6 @@ MIT
 ## Changelog
 
 ```
-0.1.3    list all documents by default, add sort options, add tasks command
+0.1.3    list all documents by default, add sort options, add tasks command,
+         case-sensitive tag lookup, tag/untag subcommand restructure
 ```

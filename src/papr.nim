@@ -5,6 +5,17 @@ import dotenv
 const Version = staticRead("../papr.nimble").splitLines().filterIt(it.startsWith("version")).
     mapIt(it.split("=")[1].strip().strip(chars = {'"'}))[0]
 
+const
+  ExitUsage = 2
+  ExitConfig = 3
+  ExitNotFound = 4
+  ExitApi = 5
+  ExitCancelled = 6
+
+proc die(msg: string, code: int) {.noreturn.} =
+  stderr.writeLine msg
+  quit code
+
 type DocId* = distinct int
 
 proc `$`*(id: DocId): string = $int(id)
@@ -27,9 +38,9 @@ proc getConfig(): tuple[url: string, token: string] =
   let url = getEnv("PAPERLESS_URL").strip(chars = {'/'})
   let token = getEnv("PAPERLESS_TOKEN")
   if url == "":
-    quit "Error: PAPERLESS_URL not set", 1
+    die "papr: PAPERLESS_URL not set", ExitConfig
   if token == "":
-    quit "Error: PAPERLESS_TOKEN not set", 1
+    die "papr: PAPERLESS_TOKEN not set", ExitConfig
   (url, token)
 
 proc apiClient(token: string): HttpClient =
@@ -44,15 +55,16 @@ proc apiGet(url, token, endpoint: string): JsonNode =
   let client = apiClient(token)
   let resp = client.get(url & endpoint)
   if resp.code != Http200:
-    quit "API error: HTTP " & $resp.code, 1
+    die "papr: API error: HTTP " & $resp.code, ExitApi
   parseJson(resp.body)
 
 proc resolveTagName*(url, token, tagName: string): int =
-  let data = apiGet(url, token, "/api/tags/?name__exact=" & encodeUrl(tagName))
-  let results = data["results"]
-  if results.len == 0:
-    quit "Tag not found: " & tagName, 1
-  results[0]["id"].getInt
+  # paperless-ngx ignores name__exact, so use iexact and match case-sensitively here
+  let data = apiGet(url, token, "/api/tags/?name__iexact=" & encodeUrl(tagName))
+  for t in data["results"]:
+    if t["name"].getStr == tagName:
+      return t["id"].getInt
+  die "papr: tag not found: " & tagName, ExitNotFound
 
 const SortFields = {
   "created": "created",
@@ -67,8 +79,8 @@ proc list*(tag: string = "", page: int = 1, limit: int = 25, text: bool = false,
            sort: string = "created", reverse: bool = false): int =
   ## List documents, optionally filtered by tag
   if sort notin SortFields:
-    quit "Unknown sort field '" & sort & "'. Supported: " &
-      toSeq(SortFields.keys).join(", "), 1
+    die "papr: unknown sort field '" & sort & "'. Supported: " &
+      toSeq(SortFields.keys).join(", "), ExitUsage
   let (url, token) = getConfig()
   # Date fields default descending (newest first); text fields default ascending
   let isDate = sort in ["created", "added", "modified"]
@@ -82,14 +94,7 @@ proc list*(tag: string = "", page: int = 1, limit: int = 25, text: bool = false,
     fmt"/api/documents/?page={page}&page_size={limit}&ordering={ordering}"
   let data = apiGet(url, token, endpoint)
 
-  let count = data["count"].getInt
   let results = data["results"]
-
-  if tag != "":
-    echo fmt"{count} documents tagged '{tag}'"
-  else:
-    echo fmt"{count} documents"
-  echo ""
 
   for doc in results:
     let id = doc["id"].getInt
@@ -102,21 +107,17 @@ proc list*(tag: string = "", page: int = 1, limit: int = 25, text: bool = false,
     else:
       ""
     let corrStr = if correspondent != "": " | " & correspondent else: ""
-    var line = fmt"  {id:>6}  {created}  {title}{corrStr}"
+    var line = fmt"{id:>6}  {created}  {title}{corrStr}"
     if text and doc.hasKey("content") and doc["content"].kind != JNull:
       let content = doc["content"].getStr.replace("\n", "\\t").strip
       if content.len > 0:
         line &= "  " & content
     echo line
 
-  if count > page * limit:
-    echo ""
-    echo fmt"  Page {page}/{(count + limit - 1) div limit}"
-
 proc show*(id: seq[DocId] = @[]): int =
   ## Show document metadata
   if id.len == 0:
-    quit "Specify a document id", 1
+    die "papr: specify a document id", ExitUsage
   let docId = id[0]
   let (url, token) = getConfig()
   let doc = apiGet(url, token, fmt"/api/documents/{docId}/")
@@ -160,11 +161,10 @@ proc show*(id: seq[DocId] = @[]): int =
 proc download*(id: seq[DocId] = @[], output: string = "", original: bool = false): int =
   ## Download document PDF
   if id.len == 0:
-    quit "Specify a document id", 1
+    die "papr: specify a document id", ExitUsage
   let docId = id[0]
   let (url, token) = getConfig()
 
-  # Get metadata first for default filename
   let doc = apiGet(url, token, fmt"/api/documents/{docId}/")
   let origName = doc["original_file_name"].getStr
   let title = doc["title"].getStr
@@ -181,10 +181,9 @@ proc download*(id: seq[DocId] = @[], output: string = "", original: bool = false
   let client = apiClient(token)
   let resp = client.get(url & endpoint)
   if resp.code != Http200:
-    quit "Download failed: HTTP " & $resp.code, 1
+    die "papr: download failed: HTTP " & $resp.code, ExitApi
 
   writeFile(outFile, resp.body)
-  echo fmt"Downloaded: {outFile} ({formatSize(resp.body.len)})"
 
 proc listTagNames*(url, token: string): seq[string] =
   var page = 1
@@ -202,14 +201,14 @@ proc createTag(url, token, name: string) =
   let body = %*{"name": name}
   let resp = client.post(url & "/api/tags/", body = $body)
   if resp.code != Http201:
-    quit "Failed to create tag '" & name & "': HTTP " & $resp.code, 1
+    die "papr: failed to create tag '" & name & "': HTTP " & $resp.code, ExitApi
 
 proc deleteTag(url, token, name: string) =
   let tagId = resolveTagName(url, token, name)
   let client = apiClient(token)
   let resp = client.delete(url & fmt"/api/tags/{tagId}/")
   if resp.code != Http204:
-    quit "Failed to delete tag '" & name & "': HTTP " & $resp.code, 1
+    die "papr: failed to delete tag '" & name & "': HTTP " & $resp.code, ExitApi
 
 proc renameTag(url, token, oldName, newName: string) =
   let tagId = resolveTagName(url, token, oldName)
@@ -218,7 +217,7 @@ proc renameTag(url, token, oldName, newName: string) =
   let body = %*{"name": newName}
   let resp = client.patch(url & fmt"/api/tags/{tagId}/", body = $body)
   if resp.code != Http200:
-    quit "Failed to rename tag '" & oldName & "': HTTP " & $resp.code, 1
+    die "papr: failed to rename tag '" & oldName & "': HTTP " & $resp.code, ExitApi
 
 proc partitionArgs(args: seq[string]): tuple[tags: seq[string], ids: seq[DocId]] =
   for a in args:
@@ -247,20 +246,18 @@ proc updateDocTags(url, token: string, docId: DocId,
   client.headers["Content-Type"] = "application/json"
   let resp = client.patch(url & fmt"/api/documents/{docId}/", body = $body)
   if resp.code != Http200:
-    quit "Update failed for doc " & $docId & ": HTTP " & $resp.code, 1
+    die "papr: update failed for doc " & $docId & ": HTTP " & $resp.code, ExitApi
 
 proc applyTags(addMode: bool, args: seq[string]) =
   let (url, token) = getConfig()
   let (tags, ids) = partitionArgs(args)
   if tags.len == 0 or ids.len == 0:
-    quit "Need at least one tag name and one document id", 1
+    die "papr: need at least one tag name and one document id", ExitUsage
   for id in ids:
     if addMode:
       updateDocTags(url, token, id, tags, @[])
     else:
       updateDocTags(url, token, id, @[], tags)
-  let verb = if addMode: "Tagged" else: "Untagged"
-  echo fmt"{verb} {ids.len} document(s) with: {tags.join("" "")}"
 
 proc tag*(args: seq[string] = @[]): int =
   ## List, create, delete, rename tags, or apply tags to documents.
@@ -277,24 +274,21 @@ proc tag*(args: seq[string] = @[]): int =
   case args[0]
   of "list":
     if args.len != 1:
-      quit "usage: papr tag list", 1
+      die "usage: papr tag list", ExitUsage
     for name in listTagNames(url, token):
       echo name
   of "create":
     if args.len != 2:
-      quit "usage: papr tag create <name>", 1
+      die "usage: papr tag create <name>", ExitUsage
     createTag(url, token, args[1])
-    echo "Created: " & args[1]
   of "delete":
     if args.len != 2:
-      quit "usage: papr tag delete <name>", 1
+      die "usage: papr tag delete <name>", ExitUsage
     deleteTag(url, token, args[1])
-    echo "Deleted: " & args[1]
   of "rename":
     if args.len != 3:
-      quit "usage: papr tag rename <old> <new>", 1
+      die "usage: papr tag rename <old> <new>", ExitUsage
     renameTag(url, token, args[1], args[2])
-    echo "Renamed: " & args[1] & " -> " & args[2]
   else:
     applyTags(addMode = true, args)
 
@@ -306,17 +300,13 @@ proc untag*(args: seq[string] = @[]): int =
 proc search*(terms: seq[string], page: int = 1, limit: int = 25, text: bool = false): int =
   ## Search documents by query
   if terms.len == 0:
-    quit "Specify search terms", 1
+    die "papr: specify search terms", ExitUsage
   let (url, token) = getConfig()
   let query = encodeUrl(terms.join(" "))
   let endpoint = fmt"/api/documents/?query={query}&page={page}&page_size={limit}&ordering=-created"
   let data = apiGet(url, token, endpoint)
 
-  let count = data["count"].getInt
   let results = data["results"]
-
-  echo fmt"{count} documents matching '{terms.join("" "")}'"
-  echo ""
 
   for doc in results:
     let id = doc["id"].getInt
@@ -329,21 +319,17 @@ proc search*(terms: seq[string], page: int = 1, limit: int = 25, text: bool = fa
     else:
       ""
     let corrStr = if correspondent != "": " | " & correspondent else: ""
-    var line = fmt"  {id:>6}  {created}  {title}{corrStr}"
+    var line = fmt"{id:>6}  {created}  {title}{corrStr}"
     if text and doc.hasKey("content") and doc["content"].kind != JNull:
       let content = doc["content"].getStr.replace("\n", "\\t").strip
       if content.len > 0:
         line &= "  " & content
     echo line
 
-  if count > page * limit:
-    echo ""
-    echo fmt"  Page {page}/{(count + limit - 1) div limit}"
-
 proc destroy*(id: seq[DocId] = @[], yes: bool = false): int =
   ## Delete a document
   if id.len == 0:
-    quit "Specify a document id", 1
+    die "papr: specify a document id", ExitUsage
   let docId = id[0]
   let (url, token) = getConfig()
   let doc = apiGet(url, token, fmt"/api/documents/{docId}/")
@@ -353,14 +339,12 @@ proc destroy*(id: seq[DocId] = @[], yes: bool = false): int =
     stderr.write fmt"Delete '{title}' (id {docId})? [y/N] "
     let answer = stdin.readLine.strip.toLowerAscii
     if answer != "y":
-      echo "Cancelled"
-      return 0
+      quit ExitCancelled
 
   let client = apiClient(token)
   let resp = client.delete(url & fmt"/api/documents/{docId}/")
   if resp.code != Http204:
-    quit "Delete failed: HTTP " & $resp.code, 1
-  echo fmt"Deleted: {title} (id {docId})"
+    die "papr: delete failed: HTTP " & $resp.code, ExitApi
 
 proc tasks*(): int =
   ## Show files currently in the consume pipeline

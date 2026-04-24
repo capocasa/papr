@@ -75,9 +75,30 @@ const SortFields = {
   "type": "document_type__name"
 }.toTable
 
-proc list*(tag: string = "", page: int = 1, limit: int = 25, text: bool = false,
+proc parseTagFilters(args: seq[string]): tuple[all, anyOf, none: seq[string]] =
+  for a in args:
+    if a.len == 0:
+      die "papr: empty tag argument", ExitUsage
+    case a[0]
+    of '+':
+      if a.len == 1: die "papr: empty tag after '+'", ExitUsage
+      result.anyOf.add(a[1..^1])
+    of '!':
+      if a.len == 1: die "papr: empty tag after '!'", ExitUsage
+      result.none.add(a[1..^1])
+    else:
+      result.all.add(a)
+
+proc resolveTagCsv(url, token: string, names: seq[string]): string =
+  var ids: seq[string]
+  for name in names:
+    ids.add($resolveTagName(url, token, name))
+  ids.join(",")
+
+proc list*(tags: seq[string] = @[], page: int = 1, limit: int = 25, text: bool = false,
            sort: string = "created", reverse: bool = false): int =
-  ## List documents, optionally filtered by tag
+  ## List documents, optionally filtered by tag expressions.
+  ## Bare tag = required (AND), +tag = any-of group (OR), !tag = excluded (NOT).
   if sort notin SortFields:
     die "papr: unknown sort field '" & sort & "'. Supported: " &
       toSeq(SortFields.keys).join(", "), ExitUsage
@@ -87,11 +108,16 @@ proc list*(tag: string = "", page: int = 1, limit: int = 25, text: bool = false,
   let descending = if reverse: not isDate else: isDate
   let prefix = if descending: "-" else: ""
   let ordering = prefix & SortFields[sort]
-  let endpoint = if tag != "":
-    let tagId = resolveTagName(url, token, tag)
-    fmt"/api/documents/?tags__id={tagId}&page={page}&page_size={limit}&ordering={ordering}"
-  else:
-    fmt"/api/documents/?page={page}&page_size={limit}&ordering={ordering}"
+
+  let (allTags, anyTags, noneTags) = parseTagFilters(tags)
+  var params = @[fmt"page={page}", fmt"page_size={limit}", fmt"ordering={ordering}"]
+  if allTags.len > 0:
+    params.add("tags__id__all=" & resolveTagCsv(url, token, allTags))
+  if anyTags.len > 0:
+    params.add("tags__id__in=" & resolveTagCsv(url, token, anyTags))
+  if noneTags.len > 0:
+    params.add("tags__id__none=" & resolveTagCsv(url, token, noneTags))
+  let endpoint = "/api/documents/?" & params.join("&")
   let data = apiGet(url, token, endpoint)
 
   let results = data["results"]
@@ -365,13 +391,13 @@ when isMainModule:
   dispatchMulti(
     ["multi", doc = "Paperless-ngx CLI"],
     [list, help = {
-      "tag": "Tag name to filter by (default: all)",
+      "tags": "Tag filters: bare=AND, +tag=OR group, !tag=NOT",
       "page": "Page number",
       "limit": "Documents per page",
       "text": "Include OCR text",
       "sort": "Sort field: created, added, modified, title, correspondent, type",
       "reverse": "Reverse sort order"
-    }, short = {"text": 'x', "reverse": 'r'}],
+    }, positional = "tags", short = {"text": 'x', "reverse": 'r'}],
     [show, help = {
       "id": "Document ID"
     }, positional = "id"],

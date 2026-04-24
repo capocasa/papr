@@ -29,13 +29,21 @@ curl -X POST https://paperless.example.com/api/token/ \
 ### List documents
 
 ```
-papr list                     # all documents
-papr list -t inbox            # by tag name
-papr list -s added            # sort by date added
-papr list -s title -r         # reverse sort
-papr list -x                  # include OCR text
-papr list -p 2                # page 2
+papr list                           # all documents
+papr list inbox                     # has tag inbox
+papr list work invoice              # has both (AND)
+papr list +draft +urgent            # has draft OR urgent
+papr list work '!archived'          # has work, not archived
+papr list +draft +urgent work '!archived'   # combined
+papr list -s added                  # sort by date added
+papr list -s title -r               # reverse sort
+papr list -x                        # include OCR text
+papr list -p 2                      # page 2
 ```
+
+Tag filter syntax: bare tag is required (AND), `+tag` joins an any-of group
+(OR), `!tag` excludes. Quote `!tag` in interactive bash/zsh to avoid history
+expansion.
 
 ### Show document metadata
 
